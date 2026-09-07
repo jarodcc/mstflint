@@ -49,6 +49,7 @@ public:
 
 protected:
     virtual void addCmd(OPTION_TYPE option);
+    virtual void removeCmd(OPTION_TYPE option);
     ParseStatus HandleOption(string name, string value);
     virtual void printSynopsisHeader();
     virtual void printSynopsisQueries();
@@ -68,15 +69,21 @@ protected:
     virtual void validateGradeScanParams();
     virtual void validateErrInjParams();
     virtual void validatePortInfoParams();
+    virtual void validatePortInfoCpoParams();
+    virtual void validateElsParams();
+    virtual void validateAmberCollectParams();
     virtual void validatePhyRecoveryParams();
     virtual void validateLinkTrainingParams();
     virtual void validatePeriodicEqParams();
     virtual void validateMultiPortInfoParams();
     virtual void validateBkvParams();
+    virtual void validatePrrParams();
     virtual void validatePlrParams();
     virtual void paramValidate();
     virtual void createMlxlinkCommander();
     virtual void initPortInfo();
+    virtual void initElsInfo();
+    virtual bool isValidElsOperation(const string& op);
     virtual void updateSysFsPath(string& sysfsPath);
 
     void handlePortStr(UserInput& userInput, const string& portStr);

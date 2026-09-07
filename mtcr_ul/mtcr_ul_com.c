@@ -53,15 +53,6 @@
 #define MTCR_MAP_SIZE 0x4000000
 #define GPU_NETIR_CR_SPACE_OFFSET 0x3000000
 
-#define DBG_PRINTF(...)                   \
-    do                                    \
-    {                                     \
-        if (getenv("MFT_DEBUG") != NULL)  \
-        {                                 \
-            fprintf(stderr, __VA_ARGS__); \
-        }                                 \
-    } while (0)
-
 #ifdef ENABLE_MST_DEV_I2C
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
@@ -107,6 +98,7 @@
 #include "tools_utils.h"
 #include "mtcr_ul_com.h"
 #include "mtcr_int_defs.h"
+#include "nvtoolslogger/nvtoolslogger_c.h"
 #include "mtcr_ib.h"
 #include "mtcr_gpu.h"
 #include "packets_layout.h"
@@ -117,6 +109,7 @@
 #include "fwctrl_ioctl.h"
 #include "kernel/mst.h"
 #include "tools_dev_types.h"
+#include "mft_core/device/device_info/device_properties_api.h"
 #ifdef ENABLE_VFIO
 #include "vfio_driver_access/VFIODriverAccessWrapperC.h"
 #endif
@@ -141,6 +134,7 @@ typedef enum
 #define DBDF "%4.4x:%2.2x:%2.2x.%1.1x"
 #define DRIVER_CR_NAME "/dev/" DBDF "_mstcr"
 #define DRIVER_CONF_NAME "/dev/" DBDF "_mstconf"
+#define NET_DEV_PREFIX "net-"
 
 /* Forward decl*/
 static int get_inband_dev_from_pci(char* inband_dev, char* pci_dev);
@@ -268,15 +262,15 @@ cl_clean_up:
 
 static int _extract_dbdf_from_full_name(const char* name, unsigned* domain, unsigned* bus, unsigned* dev, unsigned* func)
 {
-    if (sscanf(name, "/sys/bus/pci/devices/%4x:%2x:%2x.%d/resource0", domain, bus, dev, func) == 4)
+    if (sscanf(name, "/sys/bus/pci/devices/%8x:%2x:%2x.%d/resource0", domain, bus, dev, func) == 4)
     {
         return 0;
     }
-    else if (sscanf(name, "/sys/bus/pci/devices/%4x:%2x:%2x.%d/config", domain, bus, dev, func) == 4)
+    else if (sscanf(name, "/sys/bus/pci/devices/%8x:%2x:%2x.%d/config", domain, bus, dev, func) == 4)
     {
         return 0;
     }
-    else if (sscanf(name, "/proc/bus/pci/%4x:%2x/%2x.%d", domain, bus, dev, func) == 4)
+    else if (sscanf(name, "/proc/bus/pci/%8x:%2x/%2x.%d", domain, bus, dev, func) == 4)
     {
         return 0;
     }
@@ -300,7 +294,7 @@ static int mtcr_connectx_flush(void* ptr, int fdlock)
     *((u_int32_t*)((char*)ptr + 0xf0380)) = 0x0;
     do
     {
-        asm volatile("" ::: "memory");
+        __asm__ volatile("" ::: "memory");
         u_int32_t tmp = *((u_int32_t*)((char*)ptr + 0xf0380));
         value = __be32_to_cpu(tmp);
     } while (value);
@@ -833,6 +827,7 @@ enum
 #define DEVID_OFFSET 0xf0014
 #define PCICONF_ADDR_OFF 0x58
 #define PCICONF_DATA_OFF 0x5c
+#define PCICONF_ADDR_NON_POSTED_MASK 0x80000000
 
 int mtcr_driver_mread4(mfile* mf, unsigned int offset, u_int32_t* value)
 {
@@ -844,7 +839,7 @@ int mtcr_driver_mread4(mfile* mf, unsigned int offset, u_int32_t* value)
     r4.offset = offset;
     if ((ioctl(mf->fd, PCICONF_READ4, &r4)) < 0)
     {
-        DBG_PRINTF("PCICONF_READ4 ioctl failed when trying to access this space: %d. errno: %d\n", mf->address_space, errno);
+        MTCR_LOG_DEBUG("PCICONF_READ4 ioctl failed when trying to access this space: %d. errno: %d", mf->address_space, errno);
         rc = -1;
     }
     else
@@ -867,7 +862,7 @@ int mtcr_driver_mwrite4(mfile* mf, unsigned int offset, u_int32_t value)
     r4.address_space = (unsigned int)mf->address_space;
     if ((ioctl(mf->fd, PCICONF_WRITE4, &r4) < 0))
     {
-        DBG_PRINTF("PCICONF_WRITE4 ioctl failed when trying to access this space: %d. errno: %d\n", mf->address_space, errno);
+        MTCR_LOG_DEBUG("PCICONF_WRITE4 ioctl failed when trying to access this space: %d. errno: %d", mf->address_space, errno);
         rc = -1;
     }
     else
@@ -952,7 +947,7 @@ static int nvml_mread4(mfile* mf, unsigned int offset, u_int32_t* value)
     (void)offset;
     (void)value;
 
-    DBG_PRINTF("nvml doesn't support VSEC access.\n");
+    MTCR_LOG_DEBUG("nvml doesn't support VSEC access.");
     return -1;
 }
 
@@ -962,7 +957,7 @@ static int nvml_mwrite4(mfile* mf, unsigned int offset, u_int32_t value)
     (void)offset;
     (void)value;
 
-    DBG_PRINTF("nvml doesn't support VSEC access.\n");
+    MTCR_LOG_DEBUG("nvml doesn't support VSEC access.");
     return -1;
 }
 
@@ -973,7 +968,7 @@ static int nvml_mread4_block(mfile* mf, unsigned int offset, u_int32_t* data, in
     (void)data;
     (void)length;
 
-    DBG_PRINTF("nvml doesn't support VSEC access.\n");
+    MTCR_LOG_DEBUG("nvml doesn't support VSEC access.");
     return -1;
 }
 
@@ -984,7 +979,7 @@ static int nvml_mwrite4_block(mfile* mf, unsigned int offset, u_int32_t* data, i
     (void)data;
     (void)length;
 
-    DBG_PRINTF("nvml doesn't support VSEC access.\n");
+    MTCR_LOG_DEBUG("nvml doesn't support VSEC access.");
     return -1;
 }
 
@@ -1089,7 +1084,7 @@ static int driver_mwrite4_block(mfile* mf, unsigned int offset, u_int32_t* data,
             int ret = ioctl(mf->fd, PCICONF_WRITE4_BUFFER, &write4_buf);
             if (ret < 0)
             {
-                DBG_PRINTF("PCICONF_WRITE4_BUFFER ioctl failed when trying to access this space: %d. errno: %d\n", mf->address_space, errno);
+                MTCR_LOG_DEBUG("PCICONF_WRITE4_BUFFER ioctl failed when trying to access this space: %d. errno: %d", mf->address_space, errno);
             }
             offset += towrite;
             dest_ptr += towrite / sizeof(u_int32_t);
@@ -1126,7 +1121,7 @@ static int driver_mread4_block(mfile* mf, unsigned int offset, u_int32_t* data, 
                 {
                     if ((ret = ioctl(mf->fd, PCICONF_READ4_BUFFER_BC, &read4_buf)) < 0)
                     {
-                        DBG_PRINTF("PCICONF_READ4_BUFFER_EX ioctl failed when trying to access this space: %d. errno: %d\n", mf->address_space, errno);
+                        MTCR_LOG_DEBUG("PCICONF_READ4_BUFFER_EX ioctl failed when trying to access this space: %d. errno: %d", mf->address_space, errno);
                         return -1;
                     }
                 }
@@ -1186,6 +1181,53 @@ static int nvml_open(mfile* mf, const char* name)
 #endif
 }
 
+/*
+ * Read the PCI device id from sysfs into mf->pci_device_id.
+ * Needed to disambiguate devices that share the same hw_dev_id over fwctl
+ * (e.g. BlueField4 and ConnectX9 both report 0x224).
+ * On sysfs lookup failure, leave mf->pci_device_id unchanged; open still succeeds.
+ */
+static void fwctl_set_pci_device_id(mfile* mf, const char* full_path_name)
+{
+    char device_link[128];
+    char resolved[PATH_MAX];
+    char name_copy[60];
+    char fname[128];
+    char inbuf[64] = {0};
+    const char* node_name;
+    FILE* f;
+
+    strncpy(name_copy, full_path_name, sizeof(name_copy) - 1);
+    name_copy[sizeof(name_copy) - 1] = '\0';
+    node_name = basename(name_copy); // e.g. "fwctl12"
+
+    snprintf(device_link, sizeof(device_link), "/sys/class/fwctl/%s/device", node_name);
+    if (realpath(device_link, resolved) == NULL)
+    {
+        FWCTL_DEBUG_PRINT(mf, "fwctl_set_pci_device_id: failed to resolve %s\n", device_link);
+        return;
+    }
+
+    // The resolved path basename is the PCI address (e.g. "0005:41:00.0").
+    snprintf(fname, sizeof(fname), "/sys/bus/pci/devices/%s/device", basename(resolved));
+    f = fopen(fname, "r");
+    if (f == NULL)
+    {
+        FWCTL_DEBUG_PRINT(mf, "fwctl_set_pci_device_id: failed to open %s\n", fname);
+        return;
+    }
+    if (fgets(inbuf, sizeof(inbuf), f))
+    {
+        mf->pci_device_id = (u_int16_t)strtol(inbuf, NULL, 0);
+        FWCTL_DEBUG_PRINT(mf, "fwctl_set_pci_device_id: pci_device_id=0x%x\n", mf->pci_device_id);
+    }
+    else
+    {
+        FWCTL_DEBUG_PRINT(mf, "fwctl_set_pci_device_id: failed to read pci device id from %s\n", fname);
+    }
+    fclose(f);
+}
+
 static int fwctrl_driver_open(mfile* mf, const char* name)
 {
     char full_path_name[60];
@@ -1219,11 +1261,12 @@ static int fwctrl_driver_open(mfile* mf, const char* name)
     ctx->mwrite4_block = (f_mwrite4_block)fwctl_driver_mwrite4_block;
     ctx->mclose = mtcr_driver_mclose;
     mf->bar_virtual_addr = NULL;
-    fwctl_set_device_id(mf);
-
     mf->fwctl_env_var_debug = getenv(FWCTL_ENV_VAR_DEBUG);
 
-    DBG_PRINTF("fwctl: device id is %d:\n", mf->device_hw_id);
+    fwctl_set_device_id(mf);
+    fwctl_set_pci_device_id(mf, full_path_name);
+
+    MTCR_LOG_DEBUG("fwctl: device id is %d:", mf->device_hw_id);
     return 0;
 }
 
@@ -1471,7 +1514,7 @@ int mtcr_pciconf_wait_on_flag(mfile* mf, u_int8_t expected_val)
     {
         if (retries > IFC_MAX_RETRIES)
         {
-            DBG_PRINTF("wait on flag bit finished with timeout after %d retries.\n", retries);
+            MTCR_LOG_DEBUG("wait on flag bit finished with timeout after %d retries.", retries);
             return ME_PCI_IFC_TOUT;
         }
         READ4_PCI(mf, &flag, mf->vsec_addr + PCI_ADDR_OFFSET, "read flag", return ME_PCI_READ_ERROR);
@@ -1527,7 +1570,7 @@ int mtcr_pciconf_set_addr_space(mfile* mf, u_int16_t space)
     /* Check if the space written is indeed the space we attempted to write */
     if (actual_value != expected_value)
     {
-        DBG_PRINTF("actual_space_value != expected_space_value. expected_space_value: 0x%x actual_space_value: 0x%x. Meaning space: 0x%x is not supported.\n", expected_value, actual_value,
+        MTCR_LOG_DEBUG("actual_space_value != expected_space_value. expected_space_value: 0x%x actual_space_value: 0x%x. Meaning space: 0x%x is not supported.", expected_value, actual_value,
                    expected_value);
         return ME_PCI_SPACE_NOT_SUPPORTED;
     }
@@ -1540,13 +1583,13 @@ int mtcr_pciconf_set_addr_space(mfile* mf, u_int16_t space)
     return ME_OK;
 }
 
-void set_fwctl_dev(char* fwctl_dev, u_int16_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func)
+void set_fwctl_dev(char* fwctl_dev, u_int32_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func)
 {
     DIR          * dir;
     struct dirent* ent;
     char           link_path[PATH_MAX];
     char           resolved_path[PATH_MAX];
-    char           dbdf[32];
+    char           dbdf[PCI_DBDF_STR_SZ];
     unsigned int   d, b, dv, f;
 
     if (!fwctl_dev) {
@@ -1578,7 +1621,7 @@ void set_fwctl_dev(char* fwctl_dev, u_int16_t domain, u_int8_t bus, u_int8_t dev
             continue;
         }
 
-        if (sscanf(pci_name, "%x:%x:%x.%x", &d, &b, &dv, &f) != 4) {
+        if (sscanf(pci_name, "%8x:%x:%x.%x", &d, &b, &dv, &f) != 4) {
             continue;
         }
 
@@ -1591,7 +1634,7 @@ void set_fwctl_dev(char* fwctl_dev, u_int16_t domain, u_int8_t bus, u_int8_t dev
     closedir(dir);
 }
 
-void open_fwctl_dev(mfile* mf, u_int16_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func)
+void open_fwctl_dev(mfile* mf, u_int32_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func)
 {
     DIR          * dir;
     struct dirent* ent;
@@ -1620,7 +1663,7 @@ void open_fwctl_dev(mfile* mf, u_int16_t domain, u_int8_t bus, u_int8_t dev, u_i
             continue;
         }
 
-        if (sscanf(pci_name, "%x:%x:%x.%x", &d, &b, &dv, &f) != 4) {
+        if (sscanf(pci_name, "%8x:%x:%x.%x", &d, &b, &dv, &f) != 4) {
             continue;
         }
 
@@ -1664,6 +1707,10 @@ int mtcr_pciconf_rw(mfile* mf, unsigned int offset, u_int32_t* data, int rw)
         WRITE4_PCI(mf, address, mf->vsec_addr + PCI_ADDR_OFFSET, "write offset", return ME_PCI_WRITE_ERROR);
         /* wait on flag */
         rc = mtcr_pciconf_wait_on_flag(mf, 0);
+        if (rc)
+        {
+            return rc;
+        }
     }
     else
     {
@@ -1671,6 +1718,10 @@ int mtcr_pciconf_rw(mfile* mf, unsigned int offset, u_int32_t* data, int rw)
         WRITE4_PCI(mf, address, mf->vsec_addr + PCI_ADDR_OFFSET, "write offset", return ME_PCI_WRITE_ERROR);
         /* wait on flag */
         rc = mtcr_pciconf_wait_on_flag(mf, 1);
+        if (rc)
+        {
+            return rc;
+        }
         /* read data */
         READ4_PCI(mf, data, mf->vsec_addr + PCI_DATA_OFFSET, "read value", return ME_PCI_READ_ERROR);
     }
@@ -1710,7 +1761,7 @@ int mtcr_pciconf_mread4(mfile* mf, unsigned int offset, u_int32_t* value)
     int rc;
 
     rc = mtcr_pciconf_send_pci_cmd_int(mf, mf->address_space, offset, value, READ_OP);
-    DBG_PRINTF("mtcr_pciconf_mread4\n");
+    MTCR_LOG_DEBUG("mtcr_pciconf_mread4");
 
     if (rc)
     { /* OPERATIONAL error */
@@ -1723,13 +1774,13 @@ int mtcr_pciconf_mread4(mfile* mf, unsigned int offset, u_int32_t* value)
         u_int8_t syndrome_code = 0;
         if (get_syndrome_code(mf, &syndrome_code) == ME_PCI_READ_ERROR)
         { /* OPERATIONAL failure before retry */
-            DBG_PRINTF("Reading syndrome failed, aborting\n");
+            MTCR_LOG_DEBUG("Reading syndrome failed, aborting");
             return -1;
         }
         else if (syndrome_code == ADDRESS_OUT_OF_RANGE)
         { /* LOGICAL failure */
-            DBG_PRINTF(
-              "mtcr_pciconf_mread4: mtcr_pciconf_send_pci_cmd_int failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) when trying to access address_space: 0x%x at offset: 0x%x\n",
+            MTCR_LOG_DEBUG(
+              "mtcr_pciconf_mread4: mtcr_pciconf_send_pci_cmd_int failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) when trying to access address_space: 0x%x at offset: 0x%x",
               mf->address_space,
               offset);
 
@@ -1738,26 +1789,26 @@ int mtcr_pciconf_mread4(mfile* mf, unsigned int offset, u_int32_t* value)
 
             if (rc)
             { /* OPERATIONAL failure after retry */
-                DBG_PRINTF("mtcr_pciconf_mread4: mtcr_pciconf_send_pci_cmd_int failed (OPERATIONAL error), after retry, when trying to access address_space: 0x%x at offset: 0x%x\n", mf->address_space,
+                MTCR_LOG_DEBUG("mtcr_pciconf_mread4: mtcr_pciconf_send_pci_cmd_int failed (OPERATIONAL error), after retry, when trying to access address_space: 0x%x at offset: 0x%x", mf->address_space,
                            offset);
                 return -1;
             }
             if (get_syndrome_code(mf, &syndrome_code) == ME_PCI_READ_ERROR)
             { /* OPERATIONAL failure after retry */
-                DBG_PRINTF("Reading syndrome failed, aborting\n");
+                MTCR_LOG_DEBUG("Reading syndrome failed, aborting");
                 return -1;
             }
             else if (syndrome_code == ADDRESS_OUT_OF_RANGE)
             { /* LOGICAL failure after retry */
-                DBG_PRINTF(
-                  "mtcr_pciconf_mread4: mtcr_pciconf_send_pci_cmd_int failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE), after retry, when trying to access address_space: 0x%x at offset: 0x%x\n",
+                MTCR_LOG_DEBUG(
+                  "mtcr_pciconf_mread4: mtcr_pciconf_send_pci_cmd_int failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE), after retry, when trying to access address_space: 0x%x at offset: 0x%x",
                   mf->address_space,
                   offset);
                 return -1;
             }
             else
             { /* LOGICAL and OPERATIONAL success after retry */
-                DBG_PRINTF("mtcr_pciconf_mread4: mtcr_pciconf_send_pci_cmd_int, after retry, successfully accessed address_space: 0x%x at offset: 0x%x\n", mf->address_space, offset);
+                MTCR_LOG_DEBUG("mtcr_pciconf_mread4: mtcr_pciconf_send_pci_cmd_int, after retry, successfully accessed address_space: 0x%x at offset: 0x%x", mf->address_space, offset);
                 return 4;
             }
         }
@@ -1787,13 +1838,13 @@ int mtcr_pciconf_mwrite4(mfile* mf, unsigned int offset, u_int32_t value)
         u_int8_t syndrome_code = 0;
         if (get_syndrome_code(mf, &syndrome_code) == ME_PCI_READ_ERROR)
         { /* OPERATIONAL failure before retry */
-            DBG_PRINTF("Reading syndrome failed, aborting\n");
+            MTCR_LOG_DEBUG("Reading syndrome failed, aborting");
             return -1;
         }
         else if (syndrome_code == ADDRESS_OUT_OF_RANGE)
         { /* LOGICAL failure */
-            DBG_PRINTF(
-              "mtcr_pciconf_mwrite4: mtcr_pciconf_send_pci_cmd_int failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) when trying to access address_space: 0x%x at offset: 0x%x\n",
+            MTCR_LOG_DEBUG(
+              "mtcr_pciconf_mwrite4: mtcr_pciconf_send_pci_cmd_int failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) when trying to access address_space: 0x%x at offset: 0x%x",
               mf->address_space,
               offset);
 
@@ -1802,27 +1853,27 @@ int mtcr_pciconf_mwrite4(mfile* mf, unsigned int offset, u_int32_t value)
 
             if (rc)
             { /* OPERATIONAL failure after retry */
-                DBG_PRINTF("mtcr_pciconf_mwrite4: mtcr_pciconf_send_pci_cmd_int failed (OPERATIONAL error), after retry, when trying to access address_space: 0x%x at offset: 0x%x\n",
+                MTCR_LOG_DEBUG("mtcr_pciconf_mwrite4: mtcr_pciconf_send_pci_cmd_int failed (OPERATIONAL error), after retry, when trying to access address_space: 0x%x at offset: 0x%x",
                            mf->address_space,
                            offset);
                 return -1;
             }
             if (get_syndrome_code(mf, &syndrome_code) == ME_PCI_READ_ERROR)
             { /* OPERATIONAL failure after retry */
-                DBG_PRINTF("Reading syndrome failed, aborting\n");
+                MTCR_LOG_DEBUG("Reading syndrome failed, aborting");
                 return -1;
             }
             else if (syndrome_code == ADDRESS_OUT_OF_RANGE)
             { /* LOGICAL failure after retry */
-                DBG_PRINTF(
-                  "mtcr_pciconf_mwrite4: mtcr_pciconf_send_pci_cmd_int failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE), after retry, when trying to access address_space: 0x%x at offset: 0x%x\n",
+                MTCR_LOG_DEBUG(
+                  "mtcr_pciconf_mwrite4: mtcr_pciconf_send_pci_cmd_int failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE), after retry, when trying to access address_space: 0x%x at offset: 0x%x",
                   mf->address_space,
                   offset);
                 return -1;
             }
             else
             { /* LOGICAL and OPERATIONAL success after retry */
-                DBG_PRINTF("mtcr_pciconf_mwrite4: mtcr_pciconf_send_pci_cmd_int, after retry, successfully accessed address_space: 0x%x at offset: 0x%x\n", mf->address_space, offset);
+                MTCR_LOG_DEBUG("mtcr_pciconf_mwrite4: mtcr_pciconf_send_pci_cmd_int, after retry, successfully accessed address_space: 0x%x at offset: 0x%x", mf->address_space, offset);
                 return 4;
             }
         }
@@ -1882,12 +1933,12 @@ static int mread4_block_pciconf(mfile* mf, unsigned int offset, u_int32_t* data,
         u_int8_t syndrome_code = 0;
         if (get_syndrome_code(mf, &syndrome_code) == ME_PCI_READ_ERROR)
         { /* OPERATIONAL failure before retry */
-            DBG_PRINTF("Reading syndrome failed. bytes_read: 0x%x\n", bytes_read);
+            MTCR_LOG_DEBUG("Reading syndrome failed. bytes_read: 0x%x", bytes_read);
         }
         else if (syndrome_code == ADDRESS_OUT_OF_RANGE)
         { /* LOGICAL failure */
-            DBG_PRINTF(
-              "mread4_block_pciconf: block_op_pciconf failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) when trying to access address_space: 0x%x at offset: 0x%x. bytes_read: 0x%x\n",
+            MTCR_LOG_DEBUG(
+              "mread4_block_pciconf: block_op_pciconf failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) when trying to access address_space: 0x%x at offset: 0x%x. bytes_read: 0x%x",
               mf->address_space,
               offset,
               bytes_read);
@@ -1897,12 +1948,12 @@ static int mread4_block_pciconf(mfile* mf, unsigned int offset, u_int32_t* data,
 
             if (get_syndrome_code(mf, &syndrome_code) == ME_PCI_READ_ERROR)
             { /* OPERATIONAL failure after retry */
-                DBG_PRINTF("Reading syndrome failed. bytes_read: 0x%x\n", bytes_read);
+                MTCR_LOG_DEBUG("Reading syndrome failed. bytes_read: 0x%x", bytes_read);
             }
             else if (syndrome_code == ADDRESS_OUT_OF_RANGE)
             { /* LOGICAL failure after retry */
-                DBG_PRINTF(
-                  "mread4_block_pciconf: block_op_pciconf failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) after retry. when trying to access address_space: 0x%x at offset: 0x%x. bytes_read: 0x%x\n",
+                MTCR_LOG_DEBUG(
+                  "mread4_block_pciconf: block_op_pciconf failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) after retry. when trying to access address_space: 0x%x at offset: 0x%x. bytes_read: 0x%x",
                   mf->address_space,
                   offset,
                   bytes_read);
@@ -1923,12 +1974,12 @@ static int mwrite4_block_pciconf(mfile* mf, unsigned int offset, u_int32_t* data
         u_int8_t syndrome_code = 0;
         if (get_syndrome_code(mf, &syndrome_code) == ME_PCI_READ_ERROR)
         { /* OPERATIONAL failure before retry */
-            DBG_PRINTF("Reading syndrome failed. bytes_written: 0x%x\n", bytes_written);
+            MTCR_LOG_DEBUG("Reading syndrome failed. bytes_written: 0x%x", bytes_written);
         }
         else if (syndrome_code == ADDRESS_OUT_OF_RANGE)
         { /* LOGICAL failure */
-            DBG_PRINTF(
-              "mwrite4_block_pciconf: block_op_pciconf failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) when trying to access address_space: 0x%x at offset: 0x%x. bytes_written: 0x%x\n",
+            MTCR_LOG_DEBUG(
+              "mwrite4_block_pciconf: block_op_pciconf failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) when trying to access address_space: 0x%x at offset: 0x%x. bytes_written: 0x%x",
               mf->address_space,
               offset,
               bytes_written);
@@ -1938,12 +1989,12 @@ static int mwrite4_block_pciconf(mfile* mf, unsigned int offset, u_int32_t* data
 
             if (get_syndrome_code(mf, &syndrome_code) == ME_PCI_READ_ERROR)
             { /* OPERATIONAL failure after retry */
-                DBG_PRINTF("Reading syndrome failed. bytes_written: 0x%x\n", bytes_written);
+                MTCR_LOG_DEBUG("Reading syndrome failed. bytes_written: 0x%x", bytes_written);
             }
             else if (syndrome_code == ADDRESS_OUT_OF_RANGE)
             { /* LOGICAL failure after retry */
-                DBG_PRINTF(
-                  "mwrite4_block_pciconf: block_op_pciconf failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) after retry. when trying to access address_space: 0x%x at offset: 0x%x. bytes_written: 0x%x\n",
+                MTCR_LOG_DEBUG(
+                  "mwrite4_block_pciconf: block_op_pciconf failed (syndrome is set and syndrome_code is ADDRESS_OUT_OF_RANGE) after retry. when trying to access address_space: 0x%x at offset: 0x%x. bytes_written: 0x%x",
                   mf->address_space,
                   offset,
                   bytes_written);
@@ -1964,6 +2015,11 @@ int mtcr_pciconf_mread4_old(mfile* mf, unsigned int offset, u_int32_t* value)
     {
         new_offset |= 0x1;
     }
+
+    /* Mark the access non-posted so the device acknowledges it before responding on the data register.
+     * A posted read lets the data register be sampled before the device fetched the value, returning stale data. */
+    new_offset |= PCICONF_ADDR_NON_POSTED_MASK;
+
     /* adrianc: PCI registers always in le32 */
     offset = __cpu_to_le32(new_offset);
     rc = _flock_int(ctx->fdlock, LOCK_EX);
@@ -1999,6 +2055,9 @@ pciconf_read_cleanup:
     return rc;
 }
 
+/* Writes stay posted, unlike the non-posted read in mtcr_pciconf_mread4_old(): this gateway exposes no completion
+ * status, so an acknowledgement would have no consumer, while a device that never acknowledges stalls the PCI
+ * configuration write into a completion timeout - which is fatal to the host on the recovery flows this path serves. */
 int mtcr_pciconf_mwrite4_old(mfile* mf, unsigned int offset, u_int32_t value)
 {
     ul_ctx_t* ctx = mf->ul_ctx;
@@ -2177,15 +2236,15 @@ static int mtcr_vfio_device_open(mfile* mf, const char* name, unsigned domain, u
 
     if (mf->vsec_addr)
     {
-        DBG_PRINTF("VSEC address: 0x%lx\n", mf->vsec_addr);
-        DBG_PRINTF("Address region address: 0x%lx\n", mf->address_region_addr);
+        MTCR_LOG_DEBUG("VSEC address: 0x%lx", mf->vsec_addr);
+        MTCR_LOG_DEBUG("Address region address: 0x%lx", mf->address_region_addr);
         mf->vsec_addr += mf->address_region_addr;
         READ4_PCI(mf, &vsec_type, mf->vsec_addr, "read vsc type", return ME_PCI_READ_ERROR);
         mf->vsec_type = EXTRACT(vsec_type, MLX_VSC_TYPE_OFFSET, MLX_VSC_TYPE_LEN);
-        DBG_PRINTF("VSC type: %d\n", mf->vsec_type);
+        MTCR_LOG_DEBUG("VSC type: %d", mf->vsec_type);
         if (mf->vsec_type == FUNCTIONAL_VSC)
         {
-            DBG_PRINTF("FUNCTIONAL VSC Supported\n");
+            MTCR_LOG_DEBUG("FUNCTIONAL VSC Supported");
             mf->functional_vsec_supp = 1;
         }
 
@@ -2206,12 +2265,12 @@ static int mtcr_vfio_device_open(mfile* mf, const char* name, unsigned domain, u
         {
             mf->pxir_vsec_supp = 1;
         }
-        DBG_PRINTF("mf->pxir_vsec_supp: %d\n", mf->pxir_vsec_supp);
+        MTCR_LOG_DEBUG("mf->pxir_vsec_supp: %d", mf->pxir_vsec_supp);
     }
     else
     {
         ctx->wo_addr = is_wo_pciconf_gw(mf);
-        DBG_PRINTF("Write Only Address: %d\n", ctx->wo_addr);
+        MTCR_LOG_DEBUG("Write Only Address: %d", ctx->wo_addr);
         ctx->mread4 = mtcr_pciconf_mread4_old;
         ctx->mwrite4 = mtcr_pciconf_mwrite4_old;
         ctx->mread4_block = (f_mread4_block)mread_chunk_as_multi_mread4;
@@ -2256,7 +2315,7 @@ int get_cable_port(const char* name)
         int port = strtol(cable_name_ptr + (sizeof(CABLE_DEVICE_STR) - 1), &endptr, 10);
         if ((*endptr != '\0') || (port < 0))
         {
-            DBG_PRINTF("Invalid cable port: %s\n", name);
+            MTCR_LOG_DEBUG("Invalid cable port: %s", name);
             return -1;
         }
         return port;
@@ -2289,10 +2348,10 @@ static int mtcr_pciconf_open(mfile* mf, const char* name, u_int32_t adv_opt)
     {
         READ4_PCI(mf, &vsec_type, mf->vsec_addr, "read vsc type", return ME_PCI_READ_ERROR);
         mf->vsec_type = EXTRACT(vsec_type, MLX_VSC_TYPE_OFFSET, MLX_VSC_TYPE_LEN);
-        DBG_PRINTF("in mtcr_pciconf_open function. mf->vsec_type: %d\n", mf->vsec_type);
+        MTCR_LOG_DEBUG("in mtcr_pciconf_open function. mf->vsec_type: %d", mf->vsec_type);
         if (mf->vsec_type == FUNCTIONAL_VSC)
         {
-            DBG_PRINTF("FUNCTIONAL VSC Supported\n");
+            MTCR_LOG_DEBUG("FUNCTIONAL VSC Supported");
             mf->functional_vsec_supp = 1;
 
             /* check if the needed spaces are supported */
@@ -2326,13 +2385,13 @@ static int mtcr_pciconf_open(mfile* mf, const char* name, u_int32_t adv_opt)
             {
                 mf->pxir_vsec_supp = 1;
             }
-            DBG_PRINTF("MTCR_UL: mtcr_pciconf_open: mf->pxir_vsec_supp: %d\n", mf->pxir_vsec_supp);
+            MTCR_LOG_DEBUG("MTCR_UL: mtcr_pciconf_open: mf->pxir_vsec_supp: %d", mf->pxir_vsec_supp);
         }
     }
     if (!mf->functional_vsec_supp)
     {
         ctx->wo_addr = is_wo_pciconf_gw(mf);
-        DBG_PRINTF("Write Only Address: %d\n", ctx->wo_addr);
+        MTCR_LOG_DEBUG("Write Only Address: %d", ctx->wo_addr);
         ctx->mread4 = mtcr_pciconf_mread4_old;
         ctx->mwrite4 = mtcr_pciconf_mwrite4_old;
         ctx->mread4_block = (f_mread4_block)mread_chunk_as_multi_mread4;
@@ -2346,7 +2405,7 @@ static int mtcr_pciconf_open(mfile* mf, const char* name, u_int32_t adv_opt)
         int cable_port = get_cable_port(mf->dev_name);
         if ((cable_port != -1) && (mcables_open(mf, cable_port) != 0))
         {
-            DBG_PRINTF("Failed to open cable device: %s\n", mf->dev_name);
+            MTCR_LOG_DEBUG("Failed to open cable device: %s", mf->dev_name);
             return -1;
         }
     }
@@ -2423,7 +2482,7 @@ int mtcr_i2c_mread_chunks(mfile* mf, unsigned int offset, void* data, int length
 
     if (bytes_read != length)
     {
-        DBG_PRINTF("mtcr_i2c_mread_chunks: address: 0x%06x num_bytes attempted to read: %d bytes_read: %d\n", offset, length, bytes_read);
+        MTCR_LOG_DEBUG("mtcr_i2c_mread_chunks: address: 0x%06x num_bytes attempted to read: %d bytes_read: %d", offset, length, bytes_read);
     }
     return bytes_read;
 }
@@ -2473,7 +2532,7 @@ int mtcr_i2c_mwrite_chunks(mfile* mf, unsigned int offset, void* data, int lengt
 
     if (bytes_written != length)
     {
-        DBG_PRINTF("mtcr_i2c_mwrite_chunks: address: 0x%06x num_bytes attempted to write: %d bytes_written: %d\n", offset, length, bytes_written);
+        MTCR_LOG_DEBUG("mtcr_i2c_mwrite_chunks: address: 0x%06x num_bytes attempted to write: %d bytes_written: %d", offset, length, bytes_written);
     }
 
     return bytes_written;
@@ -2596,11 +2655,11 @@ int mtcr_i2c_mread4(mfile* mf, unsigned int offset, u_int32_t* value)
     if (int_rc < 0)
     {
         bytes_read = -1;
-        DBG_PRINTF("function: %s. I2C ioctl failed: %s\n", __FUNCTION__, strerror(errno));
+        MTCR_LOG_DEBUG("function: %s. I2C ioctl failed: %s", __FUNCTION__, strerror(errno));
     }
     BYTES_TO_DWORD_BE(value, data);
 
-    DBG_PRINTF("mtcr_i2c_mread4: mf->i2c_secondary: 0x%x offset: 0x%x. value: 0x%x. bytes_read: %d\n", mf->i2c_secondary, offset, value, bytes_read);
+    MTCR_LOG_DEBUG("mtcr_i2c_mread4: mf->i2c_secondary: 0x%x offset: 0x%x. value: 0x%x. bytes_read: %d", mf->i2c_secondary, offset, value, bytes_read);
 
     return bytes_read;
 }
@@ -2632,11 +2691,11 @@ int mtcr_i2c_mwrite4(mfile* mf, unsigned int offset, u_int32_t value)
     if (int_rc < 0)
     {
         bytes_written = -1;
-        DBG_PRINTF("function: %s. I2C ioctl failed: %s\n", __FUNCTION__, strerror(errno));
+        MTCR_LOG_DEBUG("function: %s. I2C ioctl failed: %s", __FUNCTION__, strerror(errno));
         return bytes_written;
     }
 
-    DBG_PRINTF("mtcr_i2c_mwrite4: mf->i2c_secondary: 0x%x offset: 0x%x. value: 0x%x. bytes_written: %d\n", mf->i2c_secondary, offset, value, bytes_written);
+    MTCR_LOG_DEBUG("mtcr_i2c_mwrite4: mf->i2c_secondary: 0x%x offset: 0x%x. value: 0x%x. bytes_written: %d", mf->i2c_secondary, offset, value, bytes_written);
 
     return bytes_written;
 }
@@ -2684,7 +2743,7 @@ int mread_i2cblock(mfile* mf, unsigned char i2c_secondary, u_int8_t addr_width, 
     rc = ioctl(mf->fd, I2C_RDWR, &i2c_rdwr);
     if (rc < 0)
     {
-        DBG_PRINTF("function: %s. I2C ioctl failed: %s\n", __FUNCTION__, strerror(errno));
+        MTCR_LOG_DEBUG("function: %s. I2C ioctl failed: %s", __FUNCTION__, strerror(errno));
         return rc;
     }
     return length;
@@ -2723,7 +2782,7 @@ int mwrite_i2cblock(mfile* mf, unsigned char i2c_secondary, u_int8_t addr_width,
     rc = ioctl(mf->fd, I2C_RDWR, &i2c_rdwr);
     if (rc < 0)
     {
-        DBG_PRINTF("function: %s. I2C ioctl failed: %s\n", __FUNCTION__, strerror(errno));
+        MTCR_LOG_DEBUG("function: %s. I2C ioctl failed: %s", __FUNCTION__, strerror(errno));
         return rc;
     }
 
@@ -2756,14 +2815,14 @@ static int mtcr_i2c_open(mfile* mf, const char* name)
     if ((mf->fd = open(name, O_RDWR | O_SYNC)) < 0)
     {
         safe_free(&mf);
-        DBG_PRINTF("mtcr_i2c_open: failed to open %s: %s\n", name, strerror(errno));
+        MTCR_LOG_DEBUG("mtcr_i2c_open: failed to open %s: %s", name, strerror(errno));
         return -1;
     }
 
     /* Support functional devices from secure generation (CX7, Quantum2 and above) */
     if (change_i2c_secondary_address(mf, mf->dtype))
     {
-        DBG_PRINTF("mtcr_i2c_open: failed to determine i2c secondary address\n");
+        MTCR_LOG_DEBUG("mtcr_i2c_open: failed to determine i2c secondary address");
         return -1;
     }
 
@@ -2872,7 +2931,7 @@ int try_to_read_secure_device(mfile* mf)
         return 1;
     }
 
-    DBG_PRINTF("I2C secondary set to 0x47\n");
+    MTCR_LOG_DEBUG("I2C secondary set to 0x47");
 
 #endif
 
@@ -2901,7 +2960,7 @@ int change_i2c_secondary_address(mfile* mf, DType dtype)
         return 0;
     }
 
-    DBG_PRINTF("trying to read from 0x48 to make sure this is the correct secondary address\n");
+    MTCR_LOG_DEBUG("trying to read from 0x48 to make sure this is the correct secondary address");
     if (read_device_id(mf, &dev_id_0x48) != 4)
     {
         return 1;
@@ -2909,7 +2968,7 @@ int change_i2c_secondary_address(mfile* mf, DType dtype)
 
     if (!is_supported_device_id(dev_id_0x48))
     {
-        DBG_PRINTF("Not supported device, trying to read from 0x47\n");
+        MTCR_LOG_DEBUG("Not supported device, trying to read from 0x47");
         return try_to_read_secure_device(mf);
     }
 
@@ -2919,7 +2978,7 @@ int change_i2c_secondary_address(mfile* mf, DType dtype)
     }
 
     mf->i2c_secondary = 0x47;
-    DBG_PRINTF("I2C secondary set to 0x47\n");
+    MTCR_LOG_DEBUG("I2C secondary set to 0x47");
 
     if (read_device_id(mf, &dev_id_0x47) != 4)
     {
@@ -2952,6 +3011,45 @@ int change_i2c_secondary_address(mfile* mf, DType dtype)
     return 0;
 }
 #endif /* ifdef ENABLE_MST_DEV_I2C */
+
+/* Network interface name to PCI address.
+ * Returns 0 on success with domain/bus/dev/func populated, -1 on failure.
+ */
+static int mtcr_resolve_net_device_pci(const char* name, unsigned* domain, unsigned* bus, unsigned* dev, unsigned* func)
+{
+    char mbuf[4048] = {0};
+    char pbuf[4048] = {0};
+    char* base;
+    int r, scnt;
+
+    r = snprintf(mbuf, sizeof(mbuf) - 1, "/sys/class/net/%s/device", name);
+    if ((r <= 0) || (r >= (int)sizeof(mbuf)))
+    {
+        fprintf(stderr, "Unable to print device name %s\n", name);
+        return -1;
+    }
+
+    r = readlink(mbuf, pbuf, sizeof(pbuf) - 1);
+    if (r < 0)
+    {
+        return -1;
+    }
+    pbuf[r] = '\0';
+
+    base = basename(pbuf);
+    if (!base)
+    {
+        return -1;
+    }
+
+    scnt = sscanf(base, "%x:%x:%x.%x", domain, bus, dev, func);
+    if (scnt != 4)
+    {
+        return -1;
+    }
+
+    return 0;
+}
 
 static MType mtcr_parse_name(const char* name, int* force, unsigned* domain_p, unsigned* bus_p, unsigned* dev_p, unsigned* func_p)
 {
@@ -3002,7 +3100,7 @@ static MType mtcr_parse_name(const char* name, int* force, unsigned* domain_p, u
 #ifdef ENABLE_VFIO
     if (is_vfio)
     {
-        scnt = sscanf(name, "vfio-%x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
+        scnt = sscanf(name, "vfio-%8x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
         if (scnt != 4)
         {
             my_domain = 0;
@@ -3022,7 +3120,7 @@ static MType mtcr_parse_name(const char* name, int* force, unsigned* domain_p, u
 
     if (CheckifKernelLockdownIsEnabled() && CheckifVfioPciDriverIsLoaded())
     {
-        scnt = sscanf(name, "%x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
+        scnt = sscanf(name, "%8x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
         if (scnt != 4)
         {
             my_domain = 0;
@@ -3085,7 +3183,7 @@ static MType mtcr_parse_name(const char* name, int* force, unsigned* domain_p, u
         {
             goto parse_error;
         }
-        scnt = sscanf(base, "%x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
+        scnt = sscanf(base, "%8x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
         if (scnt != 4)
         {
             goto parse_error;
@@ -3097,6 +3195,13 @@ static MType mtcr_parse_name(const char* name, int* force, unsigned* domain_p, u
         goto name_parsed;
     }
 
+    if (!strncmp(name, NET_DEV_PREFIX, strlen(NET_DEV_PREFIX)) &&
+        mtcr_resolve_net_device_pci(name + strlen(NET_DEV_PREFIX), &my_domain, &my_bus, &my_dev, &my_func) == 0)
+    {
+        force_config = 1;
+        goto name_parsed;
+    }
+
     scnt = sscanf(name, "%x:%x.%x", &my_bus, &my_dev, &my_func);
     if (scnt == 3)
     {
@@ -3104,7 +3209,7 @@ static MType mtcr_parse_name(const char* name, int* force, unsigned* domain_p, u
         goto name_parsed;
     }
 
-    scnt = sscanf(name, "%x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
+    scnt = sscanf(name, "%8x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
     if (scnt == 4)
     {
         force_config = check_force_config(my_domain, my_bus, my_dev, my_func);
@@ -3118,7 +3223,7 @@ static MType mtcr_parse_name(const char* name, int* force, unsigned* domain_p, u
         goto name_parsed;
     }
 
-    scnt = sscanf(name, "pciconf-%x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
+    scnt = sscanf(name, "pciconf-%8x:%x:%x.%x", &my_domain, &my_bus, &my_dev, &my_func);
     if (scnt == 4)
     {
         force_config = 1;
@@ -3225,10 +3330,7 @@ static long supported_dev_ids[] = {0x1003, /* Connect-X3 */
                                    0xa2d2, /* MT416842 Family BlueField integrated ConnectX-5 network controller */
                                    0xa2d6, /* MT42822 Family BlueField2 integrated ConnectX-6DX network controller */
                                    0xa2dc, /* MT43244 Family BlueField3 integrated ConnectX-7 network controller */
-                                   0xa2dd, // BF4 Family BlueField4 Crypto Enabled
-                                   0xa2de, // BF4 Family BlueField4 Crypto Disabled
                                    0xa2df, // BF4 Family BlueField4 Network Controller
-                                   0xc2d6, // BF4 Family BlueField4 Management Interface
                                    0xcf70, /* Spectrum3 */
                                    0xcf80, /* Spectrum4 */
                                    0xcf82, /* Spectrum5 */
@@ -3444,7 +3546,7 @@ cleanup_dir_opened:
     return ndevs;
 }
 
-static int read_pci_config_header(u_int16_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func, u_int8_t data[0x40])
+static int read_pci_config_header(u_int32_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func, u_int8_t data[0x40])
 {
     char proc_dev[64];
 
@@ -3488,7 +3590,7 @@ int check_force_config(unsigned my_domain, unsigned my_bus, unsigned my_dev, uns
 #define IB_INF "infiniband:"
 #define ETH_INF "net:"
 
-static char** get_ib_net_devs(int domain, int bus, int dev, int func, int ib_eth_)
+static char** get_ib_net_devs(unsigned int domain, int bus, int dev, int func, int ib_eth_)
 {
     char** ib_net_devs = NULL;
     int i;
@@ -3576,7 +3678,7 @@ mem_error:
     return NULL;
 }
 
-static int get_vf_devs(int domain, int bus, int dev, int func, char* buf, int len)
+static int get_vf_devs(unsigned int domain, int bus, int dev, int func, char* buf, int len)
 {
     int count = 0;
     DIR* physfndir;
@@ -3614,7 +3716,7 @@ static int get_vf_devs(int domain, int bus, int dev, int func, char* buf, int le
 
 #define VIRTFN_LINK_NAME_SIZE 128
 #define VIRTFN_PATH_SIZE 128
-static void read_vf_info(vf_info* virtfn_info, u_int16_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func, char* virtfn)
+static void read_vf_info(vf_info* virtfn_info, u_int32_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func, char* virtfn)
 {
     char linkname[VIRTFN_LINK_NAME_SIZE];
     char virtfn_path[VIRTFN_PATH_SIZE];
@@ -3648,7 +3750,7 @@ static void read_vf_info(vf_info* virtfn_info, u_int16_t domain, u_int8_t bus, u
     virtfn_info->net_devs = get_ib_net_devs(vf_domain, vf_bus, vf_dev, vf_func, 0);
 }
 
-vf_info* get_vf_info(u_int16_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func, u_int16_t* len)
+vf_info* get_vf_info(u_int32_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func, u_int16_t* len)
 {
     int vf_count = 0;
     char* vf_devs = NULL;
@@ -3705,7 +3807,7 @@ vf_info* get_vf_info(u_int16_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func
     return vf_arr;
 }
 
-static void get_numa_node(u_int16_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func, char* data)
+static void get_numa_node(u_int32_t domain, u_int8_t bus, u_int8_t dev, u_int8_t func, char* data)
 {
     char numa_path[64];
     int c;
@@ -3781,10 +3883,10 @@ dev_info* mdevices_info_v_ul(int mask, int* len, int verbosity)
     dev_name = devs;
     for (i = 0; i < rc; i++)
     {
-        int domain = 0;
-        int bus = 0;
-        int dev = 0;
-        int func = 0;
+        unsigned int domain = 0;
+        unsigned int bus = 0;
+        unsigned int dev = 0;
+        unsigned int func = 0;
 
         dev_info_arr[i].ul_mode = 1;
         dev_info_arr[i].type = (Mdevs)MDEVS_TAVOR_CR;
@@ -3796,7 +3898,7 @@ dev_info* mdevices_info_v_ul(int mask, int* len, int verbosity)
         strncpy(dev_info_arr[i].pci.cr_dev, dev_name, sizeof(dev_info_arr[i].pci.cr_dev) - 1);
 
         /* update dbdf */
-        if (sscanf(dev_name, "%x:%x:%x.%x", &domain, &bus, &dev, &func) != 4)
+        if (sscanf(dev_name, "%8x:%x:%x.%x", &domain, &bus, &dev, &func) != 4)
         {
             rc = -1;
             len = 0;
@@ -4033,7 +4135,7 @@ mfile* mopen_ul_int(const char* name, u_int32_t adv_opt)
             rc = nvml_open(mf, name);
             if (rc)
             {
-                DBG_PRINTF("Failed to open GPU mst driver device");
+                MTCR_LOG_DEBUG("Failed to open GPU mst driver device");
                 goto open_failed;
             }
             break;
@@ -4053,9 +4155,10 @@ mfile* mopen_ul_int(const char* name, u_int32_t adv_opt)
             rc = mtcr_i2c_open(mf, name);
             if (rc)
             {
-                DBG_PRINTF("Failed to open I2C device: %s\n", name);
+                MTCR_LOG_DEBUG("Failed to open I2C device: %s", name);
                 goto open_failed;
             }
+            break;
 #endif
 
         default:
@@ -4341,7 +4444,7 @@ int init_dev_info_ul(mfile* mf, const char* dev_name, unsigned domain, unsigned 
     }
     if (mf->dinfo && is_bluefield4_pci_device(mf->dinfo->pci.dev_id))
     {
-        mf->pci_device_id = DeviceBlueField4_HwId;
+        mf->pci_device_id = mf->dinfo->pci.dev_id;
     }
     
 cleanup:
@@ -4651,9 +4754,9 @@ int supports_reg_access_smp(mfile* mf)
 
 int maccess_reg_ul(mfile* mf, u_int16_t reg_id, maccess_reg_method_t reg_method, void* reg_data, u_int32_t reg_size, u_int32_t r_size_reg, u_int32_t w_size_reg, int* reg_status)
 {
-    DBG_PRINTF("Sending Access Register:\n");
-    DBG_PRINTF("Register ID: 0x%04x\n", reg_id);
-    DBG_PRINTF("Register Size: %d bytes\n", reg_size);
+    MTCR_LOG_DEBUG("Sending Access Register:");
+    MTCR_LOG_DEBUG("Register ID: 0x%04x", reg_id);
+    MTCR_LOG_DEBUG("Register Size: %d bytes", reg_size);
     int rc = -1;
 
     class_to_use = MAD_CLASS_1_REG_ACCESS;
@@ -4701,8 +4804,8 @@ int maccess_reg_ul(mfile* mf, u_int16_t reg_id, maccess_reg_method_t reg_method,
                 /* space */
                 swap_pci_address_space(mf);
                 rc = mreg_send_raw(mf, reg_id, reg_method, reg_data, reg_size, r_size_reg, w_size_reg, reg_status);
-                DBG_PRINTF(
-                  "Entered PCI VSC space support flow. Second attempt to run mreg_send_raw with VSC address space: %d returned with rc: %d. Restoring address space back to CORE's address space\n",
+                MTCR_LOG_DEBUG(
+                  "Entered PCI VSC space support flow. Second attempt to run mreg_send_raw with VSC address space: %d returned with rc: %d. Restoring address space back to CORE's address space",
                   mf->address_space,
                   rc);
             }
@@ -4718,14 +4821,14 @@ int maccess_reg_ul(mfile* mf, u_int16_t reg_id, maccess_reg_method_t reg_method,
             }
             if ((rc == ME_OK) && (*reg_status == 0))
             {
-                DBG_PRINTF("AccessRegister SMP Sent Successfully!\n");
+                MTCR_LOG_DEBUG("AccessRegister SMP Sent Successfully!");
                 return ME_OK;
             }
             else
             {
-                DBG_PRINTF("AccessRegister Class SMP Failed!\n");
-                DBG_PRINTF("Mad Status: 0x%08x\n", rc);
-                DBG_PRINTF("Register Status: 0x%08x\n", *reg_status);
+                MTCR_LOG_DEBUG("AccessRegister Class SMP Failed!");
+                MTCR_LOG_DEBUG("Mad Status: 0x%08x", rc);
+                MTCR_LOG_DEBUG("Register Status: 0x%08x", *reg_status);
                 class_to_use = MAD_CLASS_A_REG_ACCESS;
             }
         }
@@ -4736,14 +4839,14 @@ int maccess_reg_ul(mfile* mf, u_int16_t reg_id, maccess_reg_method_t reg_method,
             rc = mreg_send_raw(mf, reg_id, reg_method, reg_data, reg_size, r_size_reg, w_size_reg, reg_status);
             if ((rc == ME_OK) && (*reg_status == 0))
             {
-                DBG_PRINTF("AccessRegister Class 0xA Sent Successfully!\n");
+                MTCR_LOG_DEBUG("AccessRegister Class 0xA Sent Successfully!");
                 return ME_OK;
             }
             else
             {
-                DBG_PRINTF("AccessRegister Class 0xA Failed!\n");
-                DBG_PRINTF("Mad Status: 0x%08x\n", rc);
-                DBG_PRINTF("Register Status: 0x%08x\n", *reg_status);
+                MTCR_LOG_DEBUG("AccessRegister Class 0xA Failed!");
+                MTCR_LOG_DEBUG("Mad Status: 0x%08x", rc);
+                MTCR_LOG_DEBUG("Register Status: 0x%08x", *reg_status);
                 class_to_use = MAD_CLASS_1_REG_ACCESS;
             }
         }
@@ -4753,12 +4856,12 @@ int maccess_reg_ul(mfile* mf, u_int16_t reg_id, maccess_reg_method_t reg_method,
             rc = mib_send_gmp_access_reg_mad_ul(mf, (u_int32_t*)reg_data, reg_size, reg_id, reg_method, reg_status);
             if ((rc == ME_OK) && (*reg_status == 0))
             {
-                DBG_PRINTF("AccessRegisterGMP Sent Successfully!\n");
+                MTCR_LOG_DEBUG("AccessRegisterGMP Sent Successfully!");
                 return ME_OK;
             }
-            DBG_PRINTF("AccessRegisterGMP Failed!\n");
-            DBG_PRINTF("Mad Status: 0x%08x\n", rc);
-            DBG_PRINTF("Register Status: 0x%08x\n", *reg_status);
+            MTCR_LOG_DEBUG("AccessRegisterGMP Failed!");
+            MTCR_LOG_DEBUG("Mad Status: 0x%08x", rc);
+            MTCR_LOG_DEBUG("Register Status: 0x%08x", *reg_status);
         }
 
         /* Fallback - Attempting SMP as last resort. */
@@ -5094,7 +5197,7 @@ int mvpd_read4_ul_int(mfile* mf, unsigned int offset, u_int8_t value[4])
     {
         return mst_driver_vpd_read4(mf, offset, value);
     }
-    u_int16_t domain = (mf->dinfo)->pci.domain;
+    u_int32_t domain = (mf->dinfo)->pci.domain;
     u_int8_t bus = (mf->dinfo)->pci.bus;
     u_int8_t dev = (mf->dinfo)->pci.dev;
     u_int8_t func = (mf->dinfo)->pci.func;
@@ -5323,6 +5426,10 @@ static int check_zf_through_memory(mfile* mf)
             gis_address = 0x152080;
             break;
 
+        case DeviceSpectrum6_HwId:
+            gis_address = 0x155004;
+            break;
+
         default:
             return 0; /* Device does not support Zombiefish mode */
     }
@@ -5330,10 +5437,13 @@ static int check_zf_through_memory(mfile* mf)
 
     if (rc != 4)
     {
-        DBG_PRINTF("-E- Failed to read global_image_status from CR space (BAR0).\n");
+        MTCR_LOG_ERROR("Failed to read global_image_status from CR space (BAR0).");
         return 0;
     }
+
     gis = EXTRACT(gis, 0, 16); /* Extract the first 16 bits */
+    MTCR_LOG_DEBUG("check_zf_through_memory: gis_address: 0x%zx, gis: 0x%x", gis_address, gis);
+
     return gis == AUTHENTICATION_FAILURE;
 }
 
@@ -5349,20 +5459,22 @@ static int check_zf_through_vsc(mfile* mf)
     if (rc != 4)
     {
         mset_addr_space(mf, prev_address_space);
-        DBG_PRINTF("-E- Failed to read the first dword in VSC recovery space.\n");
+        MTCR_LOG_ERROR("Failed to read the first dword in VSC recovery space.");
         return 0;
     }
 
     uint32_t in_recovery = EXTRACT(first_dword, 1, 1);       /* Extract bit 1 */
     uint32_t flash_control_vld = EXTRACT(first_dword, 2, 1); /* Extract bit 2 */
     uint32_t initializing = EXTRACT(first_dword, 0, 1);      /* Extract bit 0 */
+    MTCR_LOG_DEBUG("Reading from VSC space: 0x%x. in_recovery: %u, flash_control_vld: %u, initializing: %u",
+               mf->address_space, in_recovery, flash_control_vld, initializing);
 
     mf->vsc_recovery_space_flash_control_vld = flash_control_vld;
     mset_addr_space(mf, prev_address_space);
 
     if (in_recovery && initializing)
     {
-        DBG_PRINTF("Device with HW ID: %u is in ZombieFish mode. flash_control_vld: %u\n", mf->device_hw_id, flash_control_vld);
+        MTCR_LOG_DEBUG("Device with HW ID: 0x%x is in ZombieFish mode. flash_control_vld: %u", mf->device_hw_id, flash_control_vld);
         return 1;
     }
 
@@ -5411,6 +5523,7 @@ int read_device_id(mfile* mf, u_int32_t* device_id)
     {
         *device_id = nvml_get_device_id(mf->nvml_device);
         mf->hw_dev_id = (*device_id & 0xffff);
+        mf->functional_device_id = resolve_functional_device_id(mf->hw_dev_id, mf->rev_id, mf->pci_device_id);
         return 4;
     }
 #endif
@@ -5431,12 +5544,12 @@ int read_device_id(mfile* mf, u_int32_t* device_id)
     // For Bluefield4 device, the HW device ID is 0x224, but need to check the PCI device ID
     if (mf->dinfo && is_bluefield4_pci_device(mf->dinfo->pci.dev_id))
     {
-        // Use the HW device ID for JSON
-        mf->pci_device_id = DeviceBlueField4_HwId;
+        mf->pci_device_id = mf->dinfo->pci.dev_id;
     }
     
     mf->hw_dev_id = (*device_id & 0xffff);
-    DBG_PRINTF("MTCR:read_device_id: mf->hw_dev_id:0x%x\n", mf->hw_dev_id);
+    mf->functional_device_id = resolve_functional_device_id(mf->hw_dev_id, mf->rev_id, mf->pci_device_id);
+    MTCR_LOG_DEBUG("MTCR:read_device_id: mf->hw_dev_id:0x%x", mf->hw_dev_id);
     return rc;
 }
 

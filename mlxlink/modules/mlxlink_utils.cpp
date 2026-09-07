@@ -33,6 +33,7 @@
  */
 
 #include "mlxlink_utils.h"
+#include <algorithm>
 
 void termHandler(int sig)
 {
@@ -51,6 +52,39 @@ u_int32_t findMaxKey(vector<string> keys)
         }
     }
     return maxKeySize;
+}
+
+std::vector<uint32_t> getIdxsFromParams(std::vector<string> params)
+{
+    std::vector<uint32_t> idxs;
+    uint32_t num = 0;
+
+    for (const auto& str : params)
+    {
+        mlxreg::RegAccessParser::strToUint32((char*)str.c_str(), num);
+        idxs.push_back(num);
+    }
+    std::sort(idxs.begin(), idxs.end());
+    return idxs;
+}
+
+// Pack a list of laser indices into a per-laser bitmask (bit i = laser i).
+uint8_t getElsLaserMaskFromList(const std::vector<uint32_t>& laserIdxs)
+{
+    uint8_t laserMask = 0;
+    for (uint32_t laserIdx : laserIdxs)
+    {
+        laserMask |= (1u << laserIdx);
+    }
+    return laserMask;
+}
+
+// Extract the CMIS ModuleState (3 bits) from the status byte at lower-mem page 0
+// byte 3 read via MCIA. Per OIF-ELSFP-CMIS-01.0 / CMIS, ModuleState lives in
+// bits 1-3 of that byte.
+uint8_t extractMCIAModuleState(uint8_t statusByte)
+{
+    return (statusByte >> ELS_MODULE_STATE_SHIFT) & ELS_MODULE_STATE_MASK;
 }
 
 string convertIntToHexString(int toConvert)
@@ -83,12 +117,29 @@ float convertFloatPrec(float value)
     return res;
 }
 
+u_int32_t toNegativePolarity(u_int32_t value, u_int32_t bitWidth)
+{
+    // One's complement within the given bit width, e.g. (0x1000, 16) -> 0xEFFF.
+    u_int32_t mask = (bitWidth >= 32) ? 0xFFFFFFFFu : ((1u << bitWidth) - 1u);
+    return (~value) & mask;
+}
+
 string getStringFromVector(vector<string> values)
 {
     string s;
     for (vector<string>::const_iterator i = values.begin(); i != values.end(); ++i)
     {
         s += *i + ',';
+    }
+    return deleteLastChar(s);
+}
+
+string getStringFromVector(vector<uint32_t> values)
+{
+    string s;
+    for (vector<uint32_t>::const_iterator i = values.begin(); i != values.end(); ++i)
+    {
+        s += to_string(*i) + ',';
     }
     return deleteLastChar(s);
 }
@@ -112,6 +163,16 @@ string getStringFromVector(vector<float> values)
         s += string(strVal) + ',';
     }
     return deleteLastChar(s);
+}
+
+string bitsToPerLaneStr(u_int32_t bitmask, u_int32_t numOfLanes)
+{
+    vector<string> perLane;
+    for (u_int32_t i = 0; i < numOfLanes; i++)
+    {
+        perLane.push_back(to_string((bitmask >> i) & 1));
+    }
+    return getStringFromVector(perLane);
 }
 
 u_int64_t add32BitTo64(u_int32_t value1, u_int32_t value2)
@@ -492,6 +553,11 @@ string getPowerClassStringValue(u_int32_t cableIdentifier, u_int32_t powerClass,
         case IDENTIFIER_QSFP_DD:
         case IDENTIFIER_OSFP:
             return mlxlinkMaps->_qsfpddOsfpPowerClass[powerClass];
+        // CPO,OE,ELS needs dedicated FR after PRM is updated with the new power_class values
+        case IDENTIFIER_CPO:
+        case IDENTIFIER_ELS:
+        case IDENTIFIER_OE:
+            return "";
         default:
             try
             {
@@ -538,6 +604,11 @@ string getPowerClass(MlxlinkMaps* mlxlinkMaps, u_int32_t cableIdentifier, u_int3
     string val = getPowerClassStringValue(cableIdentifier, powerClass, mlxlinkMaps);
     float powerClassVal = getPowerClassValue(cableIdentifier, powerClass, mlxlinkMaps);
 
+    if (cableIdentifier == IDENTIFIER_ELS || cableIdentifier == IDENTIFIER_CPO || cableIdentifier == IDENTIFIER_OE)
+    {
+        // CPO,OE,ELS needs dedicated FR after PRM is updated with the new power_class values
+        return NA_FIELD_VALUE;
+    }
     if ((maxPowerValue > powerClassVal) || (powerClass == POWER_CLASS8))
     {
         powerClassStr = getMaxPowerStr(maxPower);
@@ -781,21 +852,13 @@ string convertSpeedToNVLINK(const string& speed)
     {
         return "400g_2x_mode_b";
     }
-    if (speed == "360G_2X_MODE_B")
+    if (speed == "360G_2X_MODE_B" || speed == "378G_2X_MODE_B")
     {
         return "360g_2x_mode_b";
     }
-    if (speed == "328G_2X_MODE_B")
+    if (speed == "328G_2X_MODE_B" || speed == "345G_2X_MODE_B")
     {
         return "328g_2x_mode_b";
-    }
-    if (speed == "378G_2X_MODE_B")
-    {
-        return "378g_2x_mode_b";
-    }
-    if (speed == "345G_2X_MODE_B")
-    {
-        return "345g_2x_mode_b";
     }
     if (speed == "NDR")
     {
@@ -1215,8 +1278,20 @@ string getCableIdentifier(u_int32_t identifier)
         case IDENTIFIER_OSFP:
             identifierStr = "OSFP";
             break;
+        case IDENTIFIER_C2C:
+            identifierStr = "C2C";
+            break;
         case IDENTIFIER_DSFP:
             identifierStr = "DSFP";
+            break;
+        case IDENTIFIER_CPO:
+            identifierStr = "CPO";
+            break;
+        case IDENTIFIER_OE:
+            identifierStr = "OE";
+            break;
+        case IDENTIFIER_ELS:
+            identifierStr = "ELS";
             break;
         default:
             identifierStr = NA_FIELD_VALUE;
@@ -1228,7 +1303,7 @@ bool isCMISCable(u_int32_t identifier)
 {
     bool cmisCable = (identifier == IDENTIFIER_SFP_DD) || (identifier == IDENTIFIER_QSFP_DD) ||
                      (identifier == IDENTIFIER_QSFP_CMIS) || (identifier == IDENTIFIER_OSFP) ||
-                     (identifier == IDENTIFIER_DSFP);
+                     (identifier == IDENTIFIER_DSFP || identifier == IDENTIFIER_CPO || identifier == IDENTIFIER_ELS);
     return cmisCable;
 }
 
@@ -1559,7 +1634,7 @@ string getCableLengthStr(u_int32_t cableLength, bool cmisCable)
     {
         snprintf(cableLengthStr, sizeof(cableLengthStr), "%d", cableLength);
     }
-    return string(cableLengthStr);
+    return string(cableLengthStr) != "" ? string(cableLengthStr) : "0";
 }
 
 string getRxTxCDRState(u_int32_t state, u_int32_t numOfLanes)
@@ -2084,6 +2159,21 @@ std::string string_format(const char* format, ...)
     va_end(args);
     return out;
 }
+
+u_int32_t prrMeasDataDwordsForType(u_int32_t measType)
+{
+    switch (measType)
+    {
+        case 6:
+        case 16:
+            return 32;
+        case 8:
+            return 4;
+        default:
+            return 80;
+    }
+}
+
 /* SW controlled module utilities */
 bool readBoolFromSysFs(const string& sysfsPath)
 {

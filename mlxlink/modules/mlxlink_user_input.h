@@ -52,6 +52,7 @@ public:
     u_int32_t _labelPort;
     u_int32_t _splitPort;
     u_int32_t _secondSplitPort;
+    u_int32_t _forceIpilValue;
     u_int32_t _forceSplitValue;
     u_int32_t _depth;
     u_int32_t _pcieIndex;
@@ -60,6 +61,7 @@ public:
     u_int32_t _uniqueCableCmds;
     u_int32_t _uniquePcieCmds;
     u_int32_t _networkCmds;
+    u_int32_t _moduleIndType;
     int _pciSltpPort;
     bool _showModule;
     bool _sendPrbs;
@@ -84,6 +86,9 @@ public:
     bool _txPolicy;
     bool _advancedMode;
     bool _portSpecified;
+    bool _multiPortSpecified;
+    std::vector<std::string> _multiPortsList;
+    bool _elsModuleProvided;
     bool _splitProvided;
     bool _secondSplitProvided;
     bool _forceSplit;
@@ -100,7 +105,9 @@ public:
     bool laneSpecified;
     bool autoCsvName;
     bool _showMultiPortInfo;
+    bool _allPorts;
     bool _showMultiPortModuleInfo;
+    bool _showMultiPortCpoInfo;
     bool _showPlr;
     bool _setPlr;
     bool _showKr;
@@ -114,7 +121,9 @@ public:
     string _pmaosCmd;
     string _pplmFec;
     string _speedFec;
-    string _pplrLB;
+    string _loopbackMode;
+    string _cableSide;
+    string _pmlrState;
     string _prbsMode;
     string _pprtMode;
     string _ppttMode;
@@ -173,6 +182,12 @@ public:
     int _setGroup;
     int _showGroup;
     int _slrgTestIterations;
+    bool _isEls;
+    bool _isOe;
+    uint32_t _elsModule;
+    std::vector<uint32_t> _elsLaserIdxs;
+    string _elsOperation;
+    uint32_t _saveLaserSetpoint;
     vector<string> _labelPorts;
 
     string eyeSelect;
@@ -218,6 +233,7 @@ public:
     string _setRxPrecoding;
     bool _setTxPrecodingProvided;
     bool _setRxPrecodingProvided;
+    bool _showModuleCap;
 };
 
 #endif /* MLXLINK_USER_INPUT_H */

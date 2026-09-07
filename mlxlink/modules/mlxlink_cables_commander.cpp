@@ -31,6 +31,7 @@
  */
 
 #include "mlxlink_cables_commander.h"
+#include "common/tools_time.h"
 
 MlxlinkCablesCommander::MlxlinkCablesCommander(Json::Value& jsonRoot) : _jsonRoot(jsonRoot)
 {
@@ -579,8 +580,11 @@ void MlxlinkCablesCommander::readCableDDMInfo()
             break;
         case IDENTIFIER_QSFP_DD:
         case IDENTIFIER_OSFP:
+        case IDENTIFIER_C2C:
         case IDENTIFIER_DSFP:
         case IDENTIFIER_QSFP_CMIS:
+        case IDENTIFIER_CPO:
+        case IDENTIFIER_ELS:
             prepareQsfpddDdmInfo();
             break;
         default:
@@ -802,7 +806,8 @@ void MlxlinkCablesCommander::initValidPages()
     bool qsfpCable = (_cableIdentifier == IDENTIFIER_QSFP28 || _cableIdentifier == IDENTIFIER_QSFP_PLUS);
     bool cmisCable = (_cableIdentifier == IDENTIFIER_SFP_DD || _cableIdentifier == IDENTIFIER_QSFP_DD ||
                       _cableIdentifier == IDENTIFIER_OSFP || _cableIdentifier == IDENTIFIER_DSFP ||
-                      _cableIdentifier == IDENTIFIER_QSFP_CMIS);
+                      _cableIdentifier == IDENTIFIER_C2C || _cableIdentifier == IDENTIFIER_QSFP_CMIS ||
+                      _cableIdentifier == IDENTIFIER_CPO || _cableIdentifier == IDENTIFIER_ELS);
     if (cmisCable || qsfpCable || _sfp51Paging)
     {
         p = page_t{PAGE_0, UPPER_PAGE_OFFSET, I2C_ADDR_LOW};
@@ -1032,7 +1037,24 @@ void MlxlinkCablesCommander::initValidPages()
             }
         }
     }
+    loadVmodElsValidPages();
     std::sort(_validPages.begin(), _validPages.end(), [](const page_t& a, const page_t& b) { return a.page < b.page; });
+}
+
+void MlxlinkCablesCommander::loadVmodElsValidPages()
+{
+    page_t p;
+    // Once there is an indicator in the VMOD EEPROM itself that the ELS pages exist, use that instead
+    if (_cableIdentifier == IDENTIFIER_CPO && _protoActive == ETH)
+    {
+        for (u_int32_t page = PAGE_B0; page <= PAGE_B2; page++)
+        {
+            p = page_t{page, UPPER_PAGE_OFFSET, I2C_ADDR_LOW};
+            _validPages.push_back(p);
+        }
+        p = page_t{PAGE_BF, UPPER_PAGE_OFFSET, I2C_ADDR_LOW};
+        _validPages.push_back(p);
+    }
 }
 
 // Query dump EEPROM pages
@@ -1079,7 +1101,7 @@ void MlxlinkCablesCommander::writeToEEPROM(u_int16_t page, u_int16_t offset, vec
 // Checking read command parameters and initializing the valid pages
 void MlxlinkCablesCommander::checkParams(u_int16_t offset, u_int16_t length)
 {
-    if (offset > (EEPROM_PAGE_LENGTH + 1))
+    if (offset > EEPROM_PAGE_LENGTH)
     {
         throw MlxRegException("Invalid offset value %d. It must be within range [0-255].", offset);
     }
@@ -1142,6 +1164,110 @@ MlxlinkCmdPrint MlxlinkCablesCommander::readFromEEPRM(u_int16_t page, u_int16_t 
     free(pageL);
     free(pageH);
     return bytesOutput;
+}
+
+void MlxlinkCablesCommander::checkElsModuleReady()
+{
+    u_int8_t dword[4] = {0};
+    readMCIA(PAGE_0, sizeof(dword), ELS_MODULE_STATE_DWORD_ADDRESS, dword, I2C_ADDR_LOW);
+    u_int8_t moduleState = extractMCIAModuleState(dword[ELS_MODULE_STATE_BYTE]);
+    if (moduleState != ELS_MODULE_STATE_READY)
+    {
+        throw MlxRegException("module not in ready state (current state: %u)", (unsigned)moduleState);
+    }
+}
+
+// Verify OutputFiberCheckedFlag bit is set for every requested laser via MCIA.
+// Per OIF-ELSFP-CMIS-01.0: page 0x1A, byte 223 holds a per-laser bitmask (bit i = laser i).
+void MlxlinkCablesCommander::outputFiberChecked(const std::vector<uint32_t>& laserIdxs)
+{
+    u_int8_t dword[4] = {0};
+    readMCIA(PAGE_1A, sizeof(dword), ELS_OUTPUT_FIBER_CHECK_DWORD_ADDRESS, dword, I2C_ADDR_LOW);
+    u_int8_t fiberCheckByte = dword[ELS_OUTPUT_FIBER_CHECK_BYTE];
+    u_int8_t laserMask = getElsLaserMaskFromList(laserIdxs);
+    if ((fiberCheckByte & laserMask) != laserMask)
+    {
+        throw MlxRegException("laser fiber check not passed");
+    }
+}
+
+// Save ELS laser power setpoints directly to the cable EEPROM via MCIA.
+// Caller is expected to have verified module-ready state via checkElsModuleReady().
+// Layout (per OIF-ELSFP-CMIS-01.0):
+//   - OutputFiberCheckedFlag: page 0x1A, byte 223, per-laser bitmask
+//   - OptPowerSetpoint: page 0x1B, bytes 144-159, 2 bytes per laser (BE), 10 uW resolution
+//   - LaneState: page 0x1A, bytes 221-222, 2 bits per laser (4 lasers per byte), state 2 = ON
+void MlxlinkCablesCommander::saveLaserSetpoint(uint16_t powerSetpoint, const std::vector<uint32_t>& laserIdxs)
+{
+    // 1) Verify per-laser OutputFiberCheckedFlag bit is set.
+    outputFiberChecked(laserIdxs);
+
+    // 2) Read existing 16 bytes of per-laser power setpoints to preserve unselected lasers.
+    u_int8_t setpointBytes[ELS_LASER_NUM * ELS_LASER_SETPOINT_BYTES_PER_LASER] = {0};
+    readMCIA(PAGE_1B, sizeof(setpointBytes), ELS_LASER_SETPOINT_OFFSET, setpointBytes, I2C_ADDR_LOW);
+
+    // 3) Patch the bytes for the requested lasers (16-bit big-endian, 10 uW units).
+    for (uint32_t laserIdx : laserIdxs)
+    {
+        uint32_t pos = laserIdx * ELS_LASER_SETPOINT_BYTES_PER_LASER;
+        WORD_TO_BYTES_BE(&setpointBytes[pos], &powerSetpoint);
+    }
+
+    // Write back the updated 16 bytes
+    vector<u_int8_t> bytesToWrite(setpointBytes, setpointBytes + sizeof(setpointBytes));
+    writeToEEPROM(PAGE_1B, ELS_LASER_SETPOINT_OFFSET, bytesToWrite);
+
+    // 4) Wait for all requested lasers to reach the ON lane state.
+    if (!pollElsLasersOn(laserIdxs))
+    {
+        throw MlxRegException("laser timeout (lane state did not reach ON within %u ms)", ELS_POLL_TIMEOUT_MS);
+    }
+}
+
+// Poll lane_state at page 0x1A bytes 221-222 every ELS_POLL_INTERVAL_MS until all
+// requested lasers report state ELS_LANE_STATE_ON, with a total timeout of
+// ELS_POLL_TIMEOUT_MS. Returns true on success, false on timeout.
+bool MlxlinkCablesCommander::pollElsLasersOn(const std::vector<uint32_t>& laserIdxs)
+{
+    static constexpr const char* PROGRESS_LABEL = "Saving laser setpoint -";
+    const u_int32_t maxIterations = ELS_POLL_TIMEOUT_MS / ELS_POLL_INTERVAL_MS;
+    for (u_int32_t iter = 0; iter < maxIterations; iter++)
+    {
+        msleep(ELS_POLL_INTERVAL_MS);
+        u_int8_t laneStateDword[4] = {0};
+        readMCIA(PAGE_1A, sizeof(laneStateDword), ELS_LANE_STATE_DWORD_ADDRESS, laneStateDword, I2C_ADDR_LOW);
+        u_int8_t laneStateBytes[2] = {laneStateDword[ELS_LANE_STATE_BYTE], laneStateDword[ELS_LANE_STATE_BYTE + 1]};
+
+        bool allOn = true;
+        for (uint32_t laserIdx : laserIdxs)
+        {
+            u_int8_t byteVal = laneStateBytes[laserIdx / ELS_LANE_STATE_LASERS_PER_BYTE];
+            u_int32_t shift = (laserIdx % ELS_LANE_STATE_LASERS_PER_BYTE) * ELS_LANE_STATE_BITS;
+            u_int8_t laneState = (byteVal >> shift) & ((1 << ELS_LANE_STATE_BITS) - 1);
+            if (laneState != ELS_LANE_STATE_ON)
+            {
+                allOn = false;
+                break;
+            }
+        }
+
+        // Update progress bar
+        if (!MlxlinkRecord::jsonFormat)
+        {
+            int progress = (iter + 1) * PROGRESS_DONE / maxIterations;
+            printProgressBar(progress, PROGRESS_LABEL, "");
+        }
+
+        if (allOn)
+        {
+            if (!MlxlinkRecord::jsonFormat)
+            {
+                printProgressBar(PROGRESS_DONE, PROGRESS_LABEL, "");
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 u_int32_t MlxlinkCablesCommander::getModeAdminFromStr(u_int32_t cap, const string& adminStr, ModuleAccess_t moduleAccess)
@@ -1770,5 +1896,155 @@ void MlxlinkCablesCommander::setControlParams(vector<pair<ControlParam, string>>
     {
         fieldsStr = deleteLastChar(fieldsStr, 2);
         throw MlxRegException("Failed to set Control Parameters [%s]:\n%s", fieldsStr.c_str(), exc.what());
+    }
+}
+
+void MlxlinkCablesCommander::showModuleCapabilities()
+{
+    MlxlinkCmdPrint moduleCapOutput = MlxlinkCmdPrint();
+    setPrintTitle(moduleCapOutput, "Module Capabilities", MODULE_CAPABILITIES_INFO_LAST);
+
+    sendPrmReg(ACCESS_REG_PMCR, REG_GET);
+
+    string hostCap = getFieldValue("prec_host_cap") ? "Supported" : "Not Supported";
+    string lineCap = getFieldValue("prec_line_cap") ? "Supported" : "Not Supported";
+
+    setPrintVal(moduleCapOutput, "Host Precoding Capability", hostCap);
+    setPrintVal(moduleCapOutput, "Line Precoding Capability", lineCap);
+
+    setPrintVal(moduleCapOutput, "Transceiver Level Loopback", getTransceiverLoopbackCapStr());
+
+    moduleCapOutput.toJsonFormat(_jsonRoot);
+    cout << moduleCapOutput;
+}
+
+void MlxlinkCablesCommander::showModuleInfo()
+{
+    MlxlinkCmdPrint moduleInfoOutput = MlxlinkCmdPrint();
+    setPrintTitle(moduleInfoOutput, "Module Info", MODULE_PRECODING_INFO_LAST);
+
+    sendPrmReg(ACCESS_REG_PMCR, REG_GET);
+
+    // pair(UI name, PMCR field prefix)
+    vector<pair<string, string>> precodingFields = {{"Host Tx Pre-coding", "prec_host_tx"},
+                                                    {"Host Rx Pre-coding", "prec_host_rx"},
+                                                    {"Line Tx Pre-coding", "prec_line_tx"},
+                                                    {"Line Rx Pre-coding", "prec_line_rx"}};
+
+    for (auto it = precodingFields.begin(); it != precodingFields.end(); it++)
+    {
+        u_int32_t cntl = getFieldValue(it->second + "_override_cntl");
+        string status = (cntl == PMCR_PRECODING_OVERRIDE_CNTL_OVERRIDE) ?
+                          _mlxlinkMaps->_precodingOverrideVal[getFieldValue(it->second + "_override_val")] :
+                          _mlxlinkMaps->_precodingOverrideCntl[cntl];
+        setPrintVal(moduleInfoOutput, it->first, status);
+    }
+
+    setPrintVal(moduleInfoOutput, "Transceiver Level Loopback", getTransceiverLoopbackStr());
+
+    moduleInfoOutput.toJsonFormat(_jsonRoot);
+    cout << moduleInfoOutput;
+}
+
+string MlxlinkCablesCommander::getTransceiverLoopbackCapStr()
+{
+    string lbCapStr = "Not Supported";
+
+    try
+    {
+        sendPrmReg(ACCESS_REG_PMLR, REG_GET, "slot_index=%d,host_media=%d,lane_mask=%d", _slotIndex, PMLR_SIDE_HOST,
+                   PMLR_READ_LANE_MASK);
+
+        u_int32_t lbCap = getFieldValue("lb_cap");
+        if (lbCap)
+        {
+            lbCapStr = getStrByMask(lbCap, _mlxlinkMaps->_pmlrLoopbackCapMask, ", ");
+        }
+    }
+    catch (MlxRegException& exc)
+    {
+        // Transceiver loopback is not supported by the current FW/module; keep the default.
+    }
+
+    return lbCapStr;
+}
+
+string MlxlinkCablesCommander::getTransceiverLoopbackStr()
+{
+    string lbEnStr = "Not Supported";
+
+    try
+    {
+        sendPrmReg(ACCESS_REG_PMLR, REG_GET, "slot_index=%d,host_media=%d,lane_mask=%d", _slotIndex, PMLR_SIDE_HOST,
+                   PMLR_READ_LANE_MASK);
+        u_int32_t hostLbCap = getFieldValue("lb_cap");
+        u_int32_t hostLbEn = getFieldValue("lb_en");
+
+        sendPrmReg(ACCESS_REG_PMLR, REG_GET, "slot_index=%d,host_media=%d,lane_mask=%d", _slotIndex, PMLR_SIDE_MEDIA,
+                   PMLR_READ_LANE_MASK);
+        u_int32_t mediaLbCap = getFieldValue("lb_cap");
+        u_int32_t mediaLbEn = getFieldValue("lb_en");
+
+        if (hostLbCap || mediaLbCap)
+        {
+            map<u_int32_t, string>& lbEnMap = _mlxlinkMaps->_pmlrLoopbackEn;
+            map<u_int32_t, string>::iterator hostIt = lbEnMap.find(hostLbEn);
+            map<u_int32_t, string>::iterator mediaIt = lbEnMap.find(mediaLbEn);
+            string hostStr = (hostIt != lbEnMap.end()) ? hostIt->second : NA_FIELD_VALUE;
+            string mediaStr = (mediaIt != lbEnMap.end()) ? mediaIt->second : NA_FIELD_VALUE;
+            lbEnStr = "Host: " + hostStr + ", Media: " + mediaStr;
+        }
+    }
+    catch (MlxRegException& exc)
+    {
+        // Transceiver loopback is not supported by the current FW/module; keep the default.
+    }
+
+    return lbEnStr;
+}
+
+void MlxlinkCablesCommander::setModulePrecoding(const string& side, bool setTx, bool txEnable, bool setRx, bool rxEnable)
+{
+    string sideStr = (side == "HOST") ? "Host" : "Line";
+    string fieldPrefix = (side == "HOST") ? "prec_host" : "prec_line";
+    string capField = fieldPrefix + "_cap";
+
+    // Read PMCR once: serves both as the capability check and as the RMW base
+    sendPrmReg(ACCESS_REG_PMCR, REG_GET);
+
+    if (!getFieldValue(capField))
+    {
+        throw MlxRegException("Module %s precoding override is not supported for the current module", side.c_str());
+    }
+
+    string pmcrFieldsRequest = "";
+    if (setTx)
+    {
+        MlxlinkRecord::printCmdLine(
+          string("Setting Module Tx Precoding to ") + (txEnable ? "Enabled" : "Disabled") + " (" + sideStr + " side)",
+          _jsonRoot);
+        pmcrFieldsRequest +=
+          fieldPrefix + "_tx_override_cntl=" + to_string(PMCR_PRECODING_OVERRIDE_CNTL_OVERRIDE) + ",";
+        pmcrFieldsRequest += fieldPrefix + "_tx_override_val=" + to_string((u_int32_t)(txEnable ? 1 : 0)) + ",";
+    }
+    if (setRx)
+    {
+        MlxlinkRecord::printCmdLine(
+          string("Setting Module Rx Precoding to ") + (rxEnable ? "Enabled" : "Disabled") + " (" + sideStr + " side)",
+          _jsonRoot);
+        pmcrFieldsRequest +=
+          fieldPrefix + "_rx_override_cntl=" + to_string(PMCR_PRECODING_OVERRIDE_CNTL_OVERRIDE) + ",";
+        pmcrFieldsRequest += fieldPrefix + "_rx_override_val=" + to_string((u_int32_t)(rxEnable ? 1 : 0)) + ",";
+    }
+    pmcrFieldsRequest = deleteLastChar(pmcrFieldsRequest);
+
+    try
+    {
+        // Write without reset so the rest of the PMCR fields keep their read values (RMW)
+        sendPrmRegWithoutReset(ACCESS_REG_PMCR, REG_SET, pmcrFieldsRequest.c_str());
+    }
+    catch (MlxRegException& exc)
+    {
+        throw MlxRegException("Failed to set Module Precoding:\n%s", exc.what());
     }
 }

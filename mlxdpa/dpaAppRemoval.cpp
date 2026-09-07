@@ -38,22 +38,20 @@
 #include <iostream>
 #include <cstring>
 
-DpaAppRemoveMetadata::DpaAppRemoveMetadata(u_int32_t dpaAppUUID[4], u_int32_t keypairUUID[4])
+DpaAppRemoveMetadata::DpaAppRemoveMetadata(u_int32_t dpaAppUUID[4], u_int32_t keypairUUID[4], bool removeAll) :
+    _removeAll(removeAll)
 {
     memcpy(_dpaAppUUID, dpaAppUUID, DPA_APP_UUID_SIZE);
     memcpy(_keypairUUID, keypairUUID, KEY_PAIR_UUID_SIZE);
-    _reserved = 0x0;
 }
 
 vector<u_int8_t> DpaAppRemoveMetadata::Serialize()
 {
     vector<u_int8_t> serializedData(GetSize());
 
-    CPUTOn(_dpaAppUUID, sizeof(_dpaAppUUID) / 4);
     memcpy(serializedData.data(), _dpaAppUUID, DPA_APP_UUID_SIZE);
-    CPUTOn(_keypairUUID, sizeof(_keypairUUID) / 4);
     memcpy(serializedData.data() + DPA_APP_UUID_SIZE, _keypairUUID, KEY_PAIR_UUID_SIZE);
-    serializedData[DPA_APP_UUID_SIZE + KEY_PAIR_UUID_SIZE] = _reserved;
+    serializedData[REMOVE_ALL_OFFSET] |= (_removeAll ? 1 : 0);
 
     return serializedData;
 }
@@ -64,5 +62,8 @@ void DpaAppRemoveMetadata::Deserialize(vector<u_int8_t> buf)
     CPUTOn(_dpaAppUUID, sizeof(_dpaAppUUID) / 4);
     memcpy(_keypairUUID, buf.data() + DPA_APP_UUID_SIZE, KEY_PAIR_UUID_SIZE);
     CPUTOn(_keypairUUID, sizeof(_keypairUUID) / 4);
-    _reserved = buf[DPA_APP_UUID_SIZE + KEY_PAIR_UUID_SIZE];
+    u_int32_t removeAllDword;
+    memcpy(&removeAllDword, buf.data() + REMOVE_ALL_OFFSET, sizeof(removeAllDword));
+    CPUTOn(&removeAllDword, 1);
+    _removeAll = removeAllDword & 1;
 }

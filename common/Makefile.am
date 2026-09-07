@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. ALL RIGHTS RESERVED.
+# Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. ALL RIGHTS RESERVED.
 #
 # This software is available to you under a choice of one of two
 # licenses.  You may choose to be licensed under the terms of the GNU
@@ -40,6 +40,8 @@ libcommon_la_SOURCES = \
     tools_algorithm.h \
     tools_filesystem.cpp \
     tools_filesystem.h \
+    tools_json.cpp \
+    tools_json.h \
     tools_regex.cpp \
     tools_regex.h \
     tools_time.h \
@@ -60,7 +62,7 @@ update_tools_version = sed -e 's,[@]MSTFLINT_VERSION_STR[@],${MSTFLINT_VERSION_S
      	          	-e 's,[@]TOOLS_BUILD_TIME[@],${TOOLS_BUILD_TIME},g' \
                     -e 's,[@]TOOLS_GIT_SHA[@],${TOOLS_GIT_SHA},g'
 
-all: python_wrapper.sh tools_version.py tools_version.h mft_logger.py
+all: python_wrapper.sh tools_version.py tools_version.h nvtoolslogger.py
 	$(update_prefix) < $(srcdir)/python_wrapper.sh > python_wrapper
 	chmod +x python_wrapper
 
@@ -73,8 +75,8 @@ tools_version.h:
 tools_version_pylibdir=$(libdir)/mstflint/python_tools/
 tools_version_pylib_DATA = tools_version.py
 
-mft_logger_pylibdir=$(libdir)/mstflint/python_tools/
-mft_logger_pylib_DATA = mft_logger.py
+nvtoolslogger_pylibdir=$(libdir)/mstflint/python_tools/
+nvtoolslogger_pylib_DATA = nvtoolslogger.py
 
 EXTRA_DIST = tools_version.py.in python_wrapper.sh
 

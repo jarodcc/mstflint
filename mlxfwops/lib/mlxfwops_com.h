@@ -272,7 +272,8 @@ enum
     MLXFW_IMAGE_REACTIVATION_ERROR_DEVICE_RESET_REQUIRED,
     MLXFW_IMAGE_REACTIVATION_FW_PROGRAMMING_NEEDED,
     MLXFW_IMAGE_REACTIVATION_FW_NOT_SUPPORTING,
-    MLXFW_IMAGE_REACTIVATION_UNKNOWN_ERROR
+    MLXFW_IMAGE_REACTIVATION_UNKNOWN_ERROR,
+    MLXFW_IMAGE_REACTIVATION_PSID_MISMATCH
 };
 
 enum
@@ -536,6 +537,8 @@ typedef struct fs3_info_ext
     u_int32_t ini_file_version;
     u_int8_t geo_address;
     bool geo_address_valid;
+    u_int8_t board_ga;
+    bool board_ga_valid;
     bool socket_direct;
     bool aux_card_connected;
     bool is_aux_card_connected_valid;
@@ -654,7 +657,7 @@ typedef enum fw_img_type
     FIT_FSCTRL = 4,
     FIT_FS5 = 5,
     FIT_COMPS = 6,
-    FIT_PLDM_1_0 = 7
+    FIT_PLDM = 7
 } fw_img_type_t;
 
 enum ExpRomProto

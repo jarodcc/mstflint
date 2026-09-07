@@ -140,6 +140,8 @@ typedef struct
     u_int32_t ini_file_version;
     u_int8_t geo_address;
     bool geo_address_valid;
+    u_int8_t board_ga;
+    bool board_ga_valid;
     uint8_t independent_module;
     uint8_t pci_switch_only_mode;
     uint8_t pci_switch_only_mode_valid;
@@ -208,7 +210,9 @@ public:
         COMPID_BFB = 0x1B,
         DPA_COMPONENT = 0x1C,
         DPA_COMPONENT_REMOVAL = 0x1D,
-        COMPID_LAST_IDX = 0x1E,
+        COMPID_MTDT_TOKEN = 0x1E,
+        COMPID_CPO_VMOD_FW = 0x1F,
+        COMPID_LAST_IDX    = 0x20,
         COMPID_UNKNOWN = 0xFFFF,
     } comps_ids_t;
 
@@ -612,6 +616,7 @@ public:
     bool runMISOC(reg_access_hca_misoc_reg_ext* bfb_component, u_int32_t type, u_int32_t query_pending);
     bool AddElsPortOffset(int& elsOffsetIndex);
     bool IsCRDTDebugSessionActive();
+    bool IsVmodSupported() { return _compsQueryMap[FwComponent::COMPID_CPO_VMOD_FW].valid; }
 
 private:
     typedef enum

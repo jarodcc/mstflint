@@ -44,6 +44,7 @@ AM_CPPFLAGS = \
     -I$(top_srcdir)/dev_mgt \
     -I$(top_srcdir)/cmdif \
     -I$(top_srcdir)/tools_res_mgmt \
+    -I$(top_srcdir)/mflash \
     $(libxml2_CFLAGS) \
     $(openssl_CFLAGS)
 
@@ -81,14 +82,18 @@ libmlxcfg_la_DEPENDENCIES = \
     $(top_builddir)/dev_mgt/libdev_mgt.la \
     $(top_builddir)/fw_comps_mgr/libfw_comps_mgr.la \
     $(top_builddir)/tools_res_mgmt/libtools_res_mgmt.la \
-    $(JSON_LIBS) \
     $(MUPARSER_LIBS) \
     $(SQLITE_LIBS)
 
-libmlxcfg_la_LIBADD = $(libmlxcfg_la_DEPENDENCIES) ${LDL}
+libmlxcfg_la_LIBADD = $(libmlxcfg_la_DEPENDENCIES) $(JSON_LIBS) ${LDL}
 
 mstconfig_DEPENDENCIES = \
     libmlxcfg.la \
+    $(top_builddir)/mlxfwops/lib/libmlxfwops.a \
+    $(top_builddir)/pldmlib/libpldm.la \
+    $(top_builddir)/libmfa/libmfa.la \
+    $(top_builddir)/ext_libs/minixz/libminixz.la \
+    $(top_builddir)/mflash/libmflash.la \
     $(top_builddir)/mft_utils/libmftutils.la \
     $(top_builddir)/cmdif/libcmdif.la \
     $(top_builddir)/reg_access/libreg_access.la \
@@ -121,10 +126,15 @@ endif
 
 if ENABLE_OPENSSL
 AM_CPPFLAGS += $(openssl_CFLAGS)
+mstconfig_DEPENDENCIES += $(top_builddir)/tools_crypto/libtools_crypto.a
 mstconfig_LDADD += $(top_builddir)/mlxsign_lib/libmlxsign.la $(openssl_LIBS)
 libmlxcfg_la_LIBADD += $(top_builddir)/mlxsign_lib/libmlxsign.la $(openssl_LIBS)
 else
 AM_CXXFLAGS += -DNO_OPEN_SSL
+endif
+
+if ENABLE_DPA
+mstconfig_DEPENDENCIES += $(top_builddir)/mlxdpa/libmstdpa.a
 endif
 
 mstconfig_SOURCES =  mlxcfg_ui.h mlxcfg_parser.cpp mlxcfg_ui.cpp

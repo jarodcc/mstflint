@@ -33,9 +33,9 @@
 
 
 ###############################################################################
-#    This file was generated at "2026-04-15 11:04:25"
+#    This file was generated at "2026-08-27 14:48:52"
 #    by:
-#      > /tmp/jenkins/workspace/automatic_prm_update/scripts/prm_update.py --project switch
+#      > prm_update.py --project switch
 ###############################################################################
 
 import os
@@ -49,8 +49,10 @@ import mtcr
 class MMAM_EXT(ctypes.Structure):
     _fields_ = [
         ("module", ctypes.c_uint8),
+        ("module_msb", ctypes.c_uint8),
         ("ga", ctypes.c_uint8),
         ("local_module", ctypes.c_uint8),
+        ("local_module_msb", ctypes.c_uint8),
         ("module_type", ctypes.c_uint8)
     ]
 
@@ -67,12 +69,33 @@ class MGPIR_HW_INFO_EXT(ctypes.Structure):
         ("num_of_resource_modules", ctypes.c_uint8),
         ("total_num_of_module_i2c_bus", ctypes.c_uint8),
         ("num_lanes_per_sub_module", ctypes.c_uint8),
-        ("max_sub_modules_index", ctypes.c_uint8)
+        ("max_sub_modules_index", ctypes.c_uint8),
+        ("num_of_modules_msb", ctypes.c_uint8),
+        ("num_of_modules_per_system_msb", ctypes.c_uint8),
+        ("max_modules_per_slot_msb", ctypes.c_uint8),
+        ("els_count_local", ctypes.c_uint16),
+        ("oe_count_local", ctypes.c_uint16),
+        ("els_count_global", ctypes.c_uint16),
+        ("oe_count_global", ctypes.c_uint16),
+        ("tl_module_non_mission_count_local", ctypes.c_uint16)
+    ]
+
+class MGPIR_HW_METADATA_EXT(ctypes.Structure):
+    _fields_ = [
+        ("tl_module_mission_base_index_local", ctypes.c_uint16),
+        ("tl_module_mission_base_index_global", ctypes.c_uint16),
+        ("tl_module_non_mission_base_index_local", ctypes.c_uint16),
+        ("tl_module_non_mission_base_index_global", ctypes.c_uint16),
+        ("els_base_index_local", ctypes.c_uint16),
+        ("els_base_index_global", ctypes.c_uint16),
+        ("oe_base_index_local", ctypes.c_uint16),
+        ("oe_base_index_global", ctypes.c_uint16)
     ]
 
 class MGPIR_EXT(ctypes.Structure):
     _fields_ = [
-        ("hw_info", MGPIR_HW_INFO_EXT)
+        ("hw_info", MGPIR_HW_INFO_EXT),
+        ("hw_metadata", MGPIR_HW_METADATA_EXT)
     ]
 
 class MPIR_EXT(ctypes.Structure):
@@ -98,17 +121,6 @@ class MPIR_EXT(ctypes.Structure):
         ("slot_cap", ctypes.c_uint8)
     ]
 
-class MDDQ_SLOT_INFO_EXT(ctypes.Structure):
-    _fields_ = [
-        ("active", ctypes.c_uint8),
-        ("lc_ready", ctypes.c_uint8),
-        ("sr_valid", ctypes.c_uint8),
-        ("provisioned", ctypes.c_uint8),
-        ("ini_file_version", ctypes.c_uint16),
-        ("hw_revision", ctypes.c_uint16),
-        ("card_type", ctypes.c_uint8)
-    ]
-
 class MDDQ_DEVICE_INFO_EXT(ctypes.Structure):
     _fields_ = [
         ("device_index", ctypes.c_uint8),
@@ -126,6 +138,17 @@ class MDDQ_DEVICE_INFO_EXT(ctypes.Structure):
         ("device_type_name", ctypes.c_uint8 * 8)
     ]
 
+class MDDQ_SLOT_INFO_EXT(ctypes.Structure):
+    _fields_ = [
+        ("active", ctypes.c_uint8),
+        ("lc_ready", ctypes.c_uint8),
+        ("sr_valid", ctypes.c_uint8),
+        ("provisioned", ctypes.c_uint8),
+        ("ini_file_version", ctypes.c_uint16),
+        ("hw_revision", ctypes.c_uint16),
+        ("card_type", ctypes.c_uint8)
+    ]
+
 class MDDQ_SLOT_NAME_EXT(ctypes.Structure):
     _fields_ = [
         ("slot_ascii_name", ctypes.c_uint8 * 20)
@@ -133,8 +156,8 @@ class MDDQ_SLOT_NAME_EXT(ctypes.Structure):
 
 class MDDQ_DATA_AUTO_EXT(ctypes.Union):
     _fields_ = [
-        ("mddq_slot_info_ext", MDDQ_SLOT_INFO_EXT),
         ("mddq_device_info_ext", MDDQ_DEVICE_INFO_EXT),
+        ("mddq_slot_info_ext", MDDQ_SLOT_INFO_EXT),
         ("mddq_slot_name_ext", MDDQ_SLOT_NAME_EXT)
     ]
 
@@ -157,7 +180,8 @@ class MDSR_REG_EXT(ctypes.Structure):
         ("type_of_token", ctypes.c_uint8),
         ("revoke_version", ctypes.c_uint8),
         ("end", ctypes.c_uint8),
-        ("time_left", ctypes.c_uint32)
+        ("time_left", ctypes.c_uint32),
+        ("token_config", ctypes.c_uint32)
     ]
 
 class MRSR_EXT(ctypes.Structure):
@@ -170,6 +194,7 @@ class MFMC_REG_EXT(ctypes.Structure):
         ("fs", ctypes.c_uint8),
         ("wrp_block_count", ctypes.c_uint8),
         ("block_size", ctypes.c_uint8),
+        ("hw_wp_gpio", ctypes.c_uint8),
         ("wrp_en", ctypes.c_uint8),
         ("sub_sector_protect_size", ctypes.c_uint8),
         ("sector_protect_size", ctypes.c_uint8),
